@@ -1,0 +1,21 @@
+# core
+fastapi>=0.115
+uvicorn[standard]>=0.32
+python-multipart>=0.0.12
+numpy>=1.26,<2.3
+scipy>=1.13
+soundfile>=0.12
+librosa>=0.10
+pytest>=8.0
+httpx>=0.27
+
+# AI (heavy) — torch は CUDA index から別途インストール
+demucs>=4.0
+# transformers 5.x は CLAP checkpoint (pytorch_model.bin) のロードに torch>=2.6 を
+# 要求するため 4.x に固定
+transformers>=4.44,<5
+onnxruntime>=1.18
+
+# basic-pitch は py3.12 で tensorflow 依存が解決不能なため --no-deps で入れる:
+#   pip install --no-deps basic-pitch
+#   pip install pretty_midi resampy mir_eval   (onnxruntime backend で動作)
