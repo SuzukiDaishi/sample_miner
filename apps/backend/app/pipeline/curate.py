@@ -44,6 +44,7 @@ CATEGORY_CAPS = {
     "melodic": 8,
     "vocal_phrases": 12,
     "phrases": 8,
+    "riffs": 8,
     "drones": 4,
 }
 
@@ -157,10 +158,85 @@ def export_wav(
     sf.write(out, y, sr, subtype="PCM_16")
 
 
+def extract_other_riffs(
+    project_dir: Path, manifest: dict, out_dir: Path, max_riffs: int = 8
+) -> list[Curated]:
+    """DemucsOther ステムから beat-aligned な riff loop を直接切り出す。
+
+    密度の高い曲では onset チョップが細切れになり riff が採れないため、
+    原曲の beat tracking で小節グリッドを求め、1〜2 小節窓を
+    「音量 + ループ継ぎ目の滑らかさ」でスコアリングして上位を採用する。
+    """
+    import librosa
+
+    tracks = {t["kind"]: t for t in manifest.get("derivedTracks", []) if t.get("wavPath")}
+    other = tracks.get("DemucsOther")
+    orig = tracks.get("Original")
+    if other is None or orig is None:
+        return []
+
+    o_data, o_sr = sf.read(project_dir / other["wavPath"], always_2d=True, dtype="float32")
+    oy = o_data.mean(axis=1).astype(np.float32)
+    g_data, g_sr = sf.read(project_dir / orig["wavPath"], always_2d=True, dtype="float32")
+    gy = g_data.mean(axis=1).astype(np.float32)
+    if o_sr != g_sr or len(oy) < o_sr * 8:
+        return []
+
+    _tempo, beats = librosa.beat.beat_track(y=gy, sr=g_sr, units="samples")
+    if len(beats) < 12:
+        return []
+    bar_starts = [int(b) for b in beats[::4]]
+
+    candidates: list[tuple[float, float, int, int, int, int]] = []
+    for bi in range(len(bar_starts) - 1):
+        for nbars in (1, 2):
+            if bi + nbars >= len(bar_starts):
+                continue
+            s, e = bar_starts[bi], bar_starts[bi + nbars]
+            if e - s < o_sr // 2 or e > len(oy):
+                continue
+            seg = oy[s:e]
+            level = rms_db(seg)
+            if level < -28:
+                continue
+            # ループ継ぎ目: 先頭と末尾の波形が近いほど滑らかに回る
+            w = 256
+            head, tail = seg[:w], seg[-w:]
+            energy = float(np.abs(head).sum() + np.abs(tail).sum())
+            seam = float(np.abs(head - tail).sum()) / energy if energy > 0 else 1.0
+            score = min(1.0, (level + 28) / 20) * 0.6 + max(0.0, 1 - seam) * 0.4
+            candidates.append((score, seam, bi, nbars, s, e))
+
+    candidates.sort(key=lambda c: -c[0])
+    results: list[Curated] = []
+    used_bars: set[int] = set()
+    for score, seam, bi, nbars, s, e in candidates:
+        if len(results) >= max_riffs:
+            break
+        if any(b in used_bars for b in range(bi, bi + nbars)):
+            continue
+        used_bars.update(range(bi, bi + nbars))
+        rel = f"riffs/other_riff_{len(results) + 1:02d}_{nbars}bar.wav"
+        export_wav(oy[s:e], o_sr, out_dir / rel, 3, 15)
+        results.append(
+            Curated(
+                project_dir / other["wavPath"],
+                rel,
+                "riffs",
+                (e - s) / o_sr,
+                None,
+                score,
+                [f"{nbars}小節 beat-aligned 切り出し", f"継ぎ目スコア {1 - seam:.2f}"],
+            )
+        )
+    return results
+
+
 def curate_project(project_dir: Path, out_dir: Path) -> list[Curated]:
     """manifest 済みプロジェクトの素材を選定し out_dir/<category>/ へ書き出す。"""
     manifest = json.loads((project_dir / "manifest.json").read_text(encoding="utf-8"))
     seg_by_id = {s["id"]: s for s in manifest["segments"]}
+    bpm = next((a.get("bpm") for a in manifest["assets"] if a.get("bpm")), None)
     results: list[Curated] = []
 
     for a in manifest["assets"]:
@@ -215,6 +291,25 @@ def curate_project(project_dir: Path, out_dir: Path) -> list[Curated]:
 
         elif t in ("VocalChop", "MelodicPhrase", "SliceLoop"):
             score, reasons = analyze_phrase(y, sr)
+
+            # other ステムのフレーズは曲 BPM の小節長へトリムして riff loop 化。
+            # ループ用途なので「語尾の無音着地」は要求しない。
+            if base.startswith("other_") and bpm:
+                bar_sec = 4 * 60.0 / float(bpm)
+                mult = next((m for m in (4, 2, 1, 0.5) if dur >= m * bar_sec * 0.97), None)
+                if mult is not None:
+                    target = int(round(mult * bar_sec * sr))
+                    if 0 < target <= len(y) and rms_db(y[:target]) > -28:
+                        riff_score = 0.5 + (0.1 if mult >= 1 else 0.0) + min(0.2, score * 0.3)
+                        mult_tag = str(mult).replace(".", "_")
+                        rel_riff = f"riffs/{base}_loop{mult_tag}bar.wav"
+                        export_wav(y[:target], sr, out_dir / rel_riff, 3, 25)
+                        results.append(
+                            Curated(path, rel_riff, "riffs", target / sr,
+                                    a.get("rootNote"), riff_score,
+                                    [f"{mult}小節ループ化 ({bpm:.0f}BPM)"])
+                        )
+
             if score < 0.55:
                 continue
             folder = "vocal_phrases" if "vocal" in base else "phrases"
@@ -226,6 +321,13 @@ def curate_project(project_dir: Path, out_dir: Path) -> list[Curated]:
             rel = f"drones/{base}.wav"
             export_wav(y, sr, out_dir / rel, 20, 20)
             results.append(Curated(path, rel, "drones", dur, None, 0.6, ["loop 素材"]))
+
+    # DemucsOther から beat-aligned riff を直接切り出す
+    # (onset チョップが細切れになる曲でも riff を確保する)
+    try:
+        results.extend(extract_other_riffs(project_dir, manifest, out_dir))
+    except Exception:
+        pass  # riff 抽出は補助機能なので失敗しても他の素材選定は続行
 
     # wavetable (.zwt) はそのままコピー
     wt_dir = project_dir / "wavetables"

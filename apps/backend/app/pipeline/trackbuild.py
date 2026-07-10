@@ -175,6 +175,25 @@ def build_track(
     drones = wavs("drones")
     frames = load_wavetable(curated_dir / "wavetables")
 
+    # DemucsOther 由来の素材: riff loop / スタブ / フリーフレーズ。
+    # riff を曲のメインの音ネタとして全編に使う。
+    riffs = wavs("riffs")
+    # beat-aligned 切り出し (other_riff_NN) はスコア順の連番なので最優先。
+    # 旧 loop 化素材は 1 小節以上を優先。
+    riffs.sort(
+        key=lambda p: (0, p.name, 0)
+        if p.stem.startswith("other_riff_")
+        else (1, "", 0 if "loop0_5bar" not in p.name else 1)
+    )
+    stab_files = [p for p in wavs("melodic") if p.stem.startswith("other_")] or wavs("melodic")
+    other_phrases = sorted(
+        (p for p in wavs("phrases") if p.stem.startswith("other_")),
+        key=lambda p: -p.stat().st_size,
+    )
+    # melodic が無い曲では短い other フレーズを unpitched チョップとして使う
+    if not stab_files and other_phrases:
+        stab_files = [min(other_phrases, key=lambda p: p.stat().st_size)]
+
     spb = 60 / bpm
     bar = 4 * spb
     total = bars * bar + 3.0
@@ -182,7 +201,7 @@ def build_track(
 
     stems = {
         name: np.zeros(n, dtype=np.float32)
-        for name in ("drums", "bass", "pad", "vocal", "fx")
+        for name in ("drums", "bass", "pad", "vocal", "other", "fx")
     }
 
     kick_sel = best_drum(kicks, "kick")
@@ -212,6 +231,30 @@ def build_track(
 
     frames_bl = bandlimit(frames, 45) if frames is not None else None
 
+    # riff (DemucsOther のループ) と stab の準備。
+    # riff A をメイン、riff B があれば main 後半で切り替えて展開を作る。
+    def load_riff(p: Path) -> tuple[np.ndarray, float]:
+        y = load_mono(p)
+        return y, max(0.5, round((len(y) / SR) / bar * 2) / 2)
+
+    riff_a = load_riff(riffs[0]) if riffs else None
+    riff_b = load_riff(riffs[1]) if len(riffs) > 1 else None
+    riff_y = riff_a[0] if riff_a else None  # 有無判定用
+    riff_bars = riff_a[1] if riff_a else 1.0
+    other_phrase_y = load_mono(other_phrases[0]) if other_phrases else None
+    stab_y = load_mono(stab_files[0]) if stab_files else None
+    stab_root: int | None = None  # None = unpitched チョップとして使う
+    if stab_files:
+        stem_name = stab_files[0].stem
+        for a in manifest["assets"]:
+            if (
+                a.get("renderedPath")
+                and Path(a["renderedPath"]).stem == stem_name
+                and a.get("rootMidi")
+            ):
+                stab_root = a["rootMidi"]
+                break
+
     def section(b: int) -> str:
         if b < 2:
             return "intro"
@@ -223,10 +266,30 @@ def build_track(
             return "break"
         return "main"
 
+    def riff_for_bar(b: int) -> tuple[np.ndarray, float] | None:
+        """riff を build〜main 全域 + reprise で鳴らす (DemucsOther 主役構成)。
+        main 後半は riff B に切り替えて展開を作る。"""
+        if riff_a is None:
+            return None
+        if 2 <= b < 8:
+            return riff_a
+        if 8 <= b < 12:
+            return riff_b or riff_a
+        if 14 <= b:
+            return riff_a
+        return None
+
+    def riff_active(b: int) -> bool:
+        return riff_for_bar(b) is not None
+
+    riff_until = 0.0  # riff を敷き詰めた末尾位置 (小節単位)
+
     for b in range(bars):
         t0 = b * bar
         sec = section(b)
-        deg = degrees[b % 4]
+        # riff は原曲のコードをなぞっているため、riff 再生中は
+        # 進行をトニックに固定して衝突を避ける
+        deg = 0 if riff_active(b) else degrees[b % 4]
 
         if sec in ("build", "main") and kick is not None:
             beats = [0, 1, 2, 3] if sec == "main" else [0, 2]
@@ -263,7 +326,8 @@ def build_track(
                     yb[-240:] *= np.linspace(1, 0, 240)
                 place(stems["bass"], yb, t0 + beat * spb, -1)
 
-        if frames_bl is not None:
+        # pad は riff 再生中は休ませて DemucsOther に空間を譲る
+        if frames_bl is not None and not riff_active(b):
             triad = [degree_midi(deg, 57)]
             for step in (2, 4):
                 interval = scale[(deg + step) % 7] - scale[deg % 7]
@@ -274,12 +338,48 @@ def build_track(
             for m in triad:
                 place(stems["pad"], wt_note(frames_bl, m, bar * 1.05), t0, gain)
 
+        # riff loop (DemucsOther 主役): ブロック先頭で張り直しつつ敷き詰める
+        cur_riff = riff_for_bar(b)
+        if cur_riff is not None:
+            if b in (2, 4, 8, 14):
+                riff_until = float(b)  # ブロック切替 (riff A/B) で必ず張り直す
+            ry, rb = cur_riff
+            while riff_until < b + 1:
+                place(stems["other"], ry, riff_until * bar, -4 if sec == "main" else -6)
+                riff_until += rb
+
+        # stab / アルペジオ (DemucsOther の melodic one-shot)
+        # riff の上に軽く重ねる
+        if stab_y is not None and (
+            sec == "build" or (sec == "main" and 4 <= b < 8)
+        ):
+            max_len = int(0.45 * spb * SR)
+            if stab_root is not None:
+                stab_base = degree_midi(deg, 50)
+                for beat, offset in ((0.5, 12), (1.5, 19), (2.5, 12), (3.5, 19)):
+                    ys = pitch_shift(stab_y, stab_base + offset - stab_root)
+                    if len(ys) > max_len:
+                        ys = ys[:max_len].copy()
+                        ys[-240:] *= np.linspace(1, 0, 240)
+                    place(stems["other"], ys, t0 + beat * spb, -10)
+            else:
+                # root 不明の素材はリズムアクセントとして unpitched で置く
+                ys = stab_y[:max_len].copy()
+                if len(ys) > 240:
+                    ys[-240:] *= np.linspace(1, 0, 240)
+                for beat in (1.75, 3.75):
+                    place(stems["other"], ys, t0 + beat * spb, -9)
+
         if drones and sec in ("intro", "break"):
             dr = load_mono(drones[0])
             need = int(bar * SR)
             if len(dr) < need:
                 dr = np.tile(dr, int(np.ceil(need / len(dr))))
             place(stems["fx"], dr[:need] * np.linspace(1, 0.6, need), t0, -16)
+
+    # break (12〜13 小節) では DemucsOther のフリーフレーズを聴かせる
+    if other_phrase_y is not None and bars >= 14:
+        place(stems["other"], other_phrase_y, 12 * bar, -5)
 
     if vocals:
         v1 = load_mono(vocals[0])
@@ -334,6 +434,11 @@ def build_track(
             "vocals": [v.name for v in vocals[:2]],
             "wavetablePad": frames is not None,
             "drone": drones[0].name if drones else None,
+            "riff": riffs[0].name if riffs else None,
+            "riffBars": riff_bars if riff_y is not None else None,
+            "riff2": riffs[1].name if len(riffs) > 1 else None,
+            "stab": stab_files[0].name if stab_files else None,
+            "otherPhrase": other_phrases[0].name if other_phrases else None,
         },
     }
     (out_dir / "track_info.json").write_text(

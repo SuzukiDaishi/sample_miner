@@ -45,10 +45,15 @@ type TrackInfo = {
     vocals: string[];
     wavetablePad: boolean;
     drone: string | null;
+    riff?: string | null;
+    riffBars?: number | null;
+    riff2?: string | null;
+    stab?: string | null;
+    otherPhrase?: string | null;
   };
 };
 
-const TRACK_STEMS = ["drums", "bass", "pad", "vocal", "fx"];
+const TRACK_STEMS = ["drums", "bass", "pad", "vocal", "other", "fx"];
 
 const GROUP_LABELS: Partial<Record<AssetType, string>> = {
   PercussiveOneShot: "Percussive",
@@ -379,6 +384,12 @@ export function BackendPanel() {
                   bass: {trackInfo.materials.bass ?? "—"} / vocal:{" "}
                   {trackInfo.materials.vocals[0] ?? "—"}
                   {trackInfo.materials.wavetablePad && " / wavetable pad"}
+                  {trackInfo.materials.riff &&
+                    ` / riff: ${trackInfo.materials.riff} (${trackInfo.materials.riffBars}小節)`}
+                  {trackInfo.materials.riff2 && ` / riff B: ${trackInfo.materials.riff2}`}
+                  {trackInfo.materials.stab && ` / stab: ${trackInfo.materials.stab}`}
+                  {trackInfo.materials.otherPhrase &&
+                    ` / break: ${trackInfo.materials.otherPhrase}`}
                 </div>
                 <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
                   <b style={{ fontSize: 12 }}>Mix</b>
@@ -403,6 +414,7 @@ export function BackendPanel() {
                     if (s === "bass") return !!m.bass;
                     if (s === "pad") return m.wavetablePad;
                     if (s === "vocal") return m.vocals.length > 0;
+                    if (s === "other") return !!(m.riff || m.stab || m.otherPhrase);
                     return !!m.drone;
                   }).map((s) => (
                     <span key={s} style={{ fontSize: 11 }}>
