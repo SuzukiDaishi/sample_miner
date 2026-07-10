@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -111,6 +113,44 @@ def get_manifest(project_id: str) -> JSONResponse:
     if not path.exists():
         raise HTTPException(404, "manifest not ready")
     return JSONResponse(content=json.loads(path.read_text(encoding="utf-8")))
+
+
+_manifest_lock = threading.Lock()
+
+
+@app.post("/api/projects/{project_id}/assets/{asset_id}/rating")
+def set_asset_rating(project_id: str, asset_id: str, payload: dict) -> dict:
+    """asset の keep/discard 判定を manifest へ書き戻す (docs 08 §3.4 D-2)。
+
+    判定は scripts/train_ranker.py の教師データになる。
+    注意: プロジェクトを再解析すると manifest が再生成され判定は消える。
+    """
+    rating = payload.get("rating")
+    if rating not in ("keep", "discard", None):
+        raise HTTPException(400, "rating must be keep / discard / null")
+    if not re.fullmatch(r"[\w\-]+", asset_id):
+        raise HTTPException(400, "invalid asset id")
+    path = _project_dir(project_id) / "manifest.json"
+
+    with _manifest_lock:
+        if not path.exists():
+            raise HTTPException(409, "manifest not ready")
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        asset = next((a for a in manifest["assets"] if a["id"] == asset_id), None)
+        if asset is None:
+            raise HTTPException(404, "asset not found")
+        if rating is None:
+            asset.pop("userRating", None)
+        else:
+            asset["userRating"] = rating
+        # atomic 書き換え: 解析 job と競合しても壊れた JSON を残さない
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(
+            json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        os.replace(tmp, path)
+
+    return {"ok": True, "assetId": asset_id, "rating": rating}
 
 
 @app.get("/api/projects/{project_id}/files/{file_path:path}")

@@ -188,6 +188,8 @@ export function buildManifest(input: ExportInput): ProjectManifest {
       confidence: a.confidence,
       uncertain: a.confidence < 0.6,
       userEdited: a.userEdited || undefined,
+      // discard 判定も残す: discard ラベル自体が ranker の学習データ (docs 08 D-2)
+      userRating: a.userRating,
     });
   }
 

@@ -90,17 +90,28 @@ def _embed_audio(y: np.ndarray, sr: int):
         return audio_emb / audio_emb.norm(dim=-1, keepdim=True)
 
 
-def analyze_audio(y: np.ndarray, sr: int, top_k: int = 3) -> dict:
-    """1 回の audio embedding で tags と catchy スコアの両方を返す。
+def embed_audio(y: np.ndarray, sr: int) -> np.ndarray | None:
+    """mono buffer → unit-norm audio embedding (np.float32)。ranker 学習用。"""
+    emb = _embed_audio(y, sr)
+    if emb is None:
+        return None
+    return emb.cpu().numpy()[0].astype(np.float32)
 
-    returns {"tags": ScoredTag list, "catchy": float 0..1 | None}
+
+def analyze_audio(y: np.ndarray, sr: int, top_k: int = 3) -> dict:
+    """1 回の audio embedding で tags / catchy / embedding をまとめて返す。
+
+    returns {"tags": ScoredTag list, "catchy": float 0..1 | None,
+             "embedding": np.float32 unit-norm array | None}
+    embedding は JSON 非安全なので features へは stamp しないこと
+    (個人 ranker の personalScore 算出にのみ使う; docs 08 §3.4 D-2)。
     """
     import torch
 
     st = _get_model()
     audio_emb = _embed_audio(y, sr)
     if audio_emb is None:
-        return {"tags": [], "catchy": None}
+        return {"tags": [], "catchy": None, "embedding": None}
 
     with torch.no_grad():
         logits = (audio_emb @ st["text_emb"].T)[0]
@@ -116,7 +127,11 @@ def analyze_audio(y: np.ndarray, sr: int, top_k: int = 3) -> dict:
         {"tag": PROMPTS[i], "score": float(probs[i]), "source": "clap"}
         for i in order
     ]
-    return {"tags": tags, "catchy": catchy}
+    return {
+        "tags": tags,
+        "catchy": catchy,
+        "embedding": audio_emb.cpu().numpy()[0].astype(np.float32),
+    }
 
 
 def tag_audio(y: np.ndarray, sr: int, top_k: int = 3) -> list[dict]:

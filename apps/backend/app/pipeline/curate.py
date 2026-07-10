@@ -174,12 +174,38 @@ def blend_clap(
     return (1 - weight) * c + weight * float(v)
 
 
+def blend_aesthetics(
+    c: float, feats: dict, reasons: list[str], weight: float = 0.15
+) -> float:
+    """Audiobox-Aesthetics の CE+PQ 正規化スコア (docs 08 §3.4 D-1)。
+    汎用の美的評価なので CLAP と同じく弱いシグナルとして blend する。"""
+    v = feats.get("aesScore")
+    if v is None:
+        return c
+    if v >= 0.7:
+        reasons.append(f"美的評価スコア高 (aes {v:.2f})")
+    return (1 - weight) * c + weight * float(v)
+
+
+def blend_personal(
+    c: float, feats: dict, reasons: list[str], weight: float = 0.2
+) -> float:
+    """個人 ranker スコア (docs 08 §3.4 D-2)。ユーザー自身の keep/discard
+    判定から学習しているため CLAP より強い重みで blend する。"""
+    v = feats.get("personalScore")
+    if v is None:
+        return c
+    if v >= 0.7:
+        reasons.append(f"あなたの好みに近い ({v:.2f})")
+    return (1 - weight) * c + weight * float(v)
+
+
 def catchiness_for_asset(
     y: np.ndarray, sr: int, feats: dict, asset_type: str
 ) -> tuple[float, list[str]]:
-    """asset type に応じたキャッチーさ (hook / CLAP blend 込み)。
+    """asset type に応じたキャッチーさ (hook / CLAP / aesthetics / 個人 blend 込み)。
 
-    curate の選定と runner の CLAP 対象選定 (docs 08 §3.3) の共通入口。
+    curate の選定と runner のモデル対象選定 (docs 08 §3.3) の共通入口。
     """
     if asset_type in ("PercussiveOneShot", "Impact"):
         c, reasons = catchiness_oneshot(y, sr, feats)
@@ -192,7 +218,9 @@ def catchiness_for_asset(
         c = blend_hook(c, feats, reasons)
     else:  # DroneLoop / NoiseTexture / AmbienceLoop 等は中立
         c, reasons = 0.5, []
-    return blend_clap(c, feats, reasons), reasons
+    c = blend_clap(c, feats, reasons)
+    c = blend_aesthetics(c, feats, reasons)
+    return blend_personal(c, feats, reasons), reasons
 
 
 def analyze_oneshot(
@@ -474,6 +502,8 @@ def curate_project(project_dir: Path, out_dir: Path) -> list[Curated]:
                         # riff は hook 反復が主軸 (docs 08 §3.2)
                         riff_catchy = blend_hook(riff_quality, feats, riff_reasons, weight=0.4)
                         riff_catchy = blend_clap(riff_catchy, feats, riff_reasons)
+                        riff_catchy = blend_aesthetics(riff_catchy, feats, riff_reasons)
+                        riff_catchy = blend_personal(riff_catchy, feats, riff_reasons)
                         mult_tag = str(mult).replace(".", "_")
                         rel_riff = f"riffs/{base}_loop{mult_tag}bar.wav"
                         export_wav(y[:target], sr, out_dir / rel_riff, 3, 25)

@@ -158,6 +158,7 @@ type AudioAsset = {
   confidence: number;
   uncertain?: boolean;
   userEdited?: boolean;
+  userRating?: "keep" | "discard"; // 個人 ranker の教師データ (docs 08 §3.4 D-2)
 };
 ```
 
@@ -196,6 +197,9 @@ type AudioFeatures = {
   spectralFluxMean?: number;    // ピーク正規化後の onset strength 平均
   pitchRangeSemitones?: number; // voiced f0 の 10–90 percentile 幅 (半音)
   hookScore?: number;           // 原曲反復マップ上の 0..1 (docs 08 §3.2)
+  clapCatchy?: number;          // CLAP 対照ペアスコア 0..1 (docs 08 §3.3)
+  aesScore?: number;            // Audiobox-Aesthetics CE+PQ 正規化 0..1 (docs 08 §3.4)
+  personalScore?: number;       // 個人 ranker スコア 0..1 (docs 08 §3.4)
 
   bpm?: number;
   key?: string;

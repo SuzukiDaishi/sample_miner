@@ -28,11 +28,12 @@ Web Lite (http://localhost:5173) の「Full Backend」タブから接続する�
 
 | Method | Path | 内容 |
 |---|---|---|
-| GET | `/api/health` | モデル利用可否 (demucs / clap / basicPitch / device) |
+| GET | `/api/health` | モデル利用可否 (demucs / clap / basicPitch / aesthetics / device) |
 | POST | `/api/projects` | multipart `file` + `mode` (auto/music/field/voice/none) → `{projectId, jobId}` |
 | GET | `/api/jobs/{id}` | job 進捗 (stage / progress / status) |
 | GET | `/api/projects` | プロジェクト一覧 |
 | GET | `/api/projects/{id}/manifest` | manifest.json (schema v0.1) |
+| POST | `/api/projects/{id}/assets/{assetId}/rating` | JSON `{"rating": "keep"\|"discard"\|null}` → manifest へ書き戻し (個人 ranker の教師データ。再解析すると消える) |
 | POST | `/api/projects/{id}/track` | Form `bars` (4/8/16/32) + `seed` → 素材キュレーション + トラック自動組み立て job |
 | GET | `/api/projects/{id}/files/{path}` | 生成された wav / .zwt / .mid / track/mix.wav の取得 |
 
@@ -61,6 +62,19 @@ AI モデルが未インストールでも起動でき、該当ステージは�
 出力は `projects/<id>/track/{mix.wav, stems/, track_info.json}`。
 CLI 版: `scripts/mine_and_curate.py`(バッチ採掘 + RECOMMENDED.md)と
 `scripts/build_track.py`(同ロジックの薄いラッパー)。
+
+## 個人 ranker (docs 08 §3.4 D-2)
+
+Web Lite / Full Backend で付けた keep/discard 判定を教師に、CLAP embedding 上の
+ロジスティック回帰で「自分にとってのキャッチーさ」を学習できる:
+
+```powershell
+.\.venv\Scripts\python scripts\train_ranker.py    # projects/ の判定から学習
+```
+
+出力 `ranker_weights.json` (`SAMPLE_MINER_RANKER_PATH` で変更可) があると、
+以降の解析で各 segment に `personalScore` が付き、curate の順位に blend される。
+判定が数百件貯まってからの学習を推奨 (少ないと過学習警告が出る)。
 
 ## 出力 (projects/<id>/)
 

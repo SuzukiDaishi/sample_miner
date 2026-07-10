@@ -11,6 +11,11 @@ PROJECTS_DIR = Path(
 )
 PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
 
+# 個人 ranker の重み (docs 08 §3.4 D-2)。scripts/train_ranker.py が生成する
+RANKER_PATH = Path(
+    os.environ.get("SAMPLE_MINER_RANKER_PATH", BACKEND_DIR / "ranker_weights.json")
+)
+
 MASTER_SAMPLE_RATE = 48000
 ANALYSIS_SAMPLE_RATE = 22050
 

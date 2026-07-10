@@ -19,6 +19,7 @@ from ..config import (
     MAX_DRONES,
     MAX_MIDI,
     MAX_WAVETABLES,
+    RANKER_PATH,
 )
 from ..models.availability import model_availability
 from . import classify as clf
@@ -237,14 +238,13 @@ def run_pipeline(
                     f"features {done}/{total_segs}",
                 )
 
-    # ---- 4. CLAP タグ + 対照ペアスコア (候補提示のみ) ----
-    if avail["clap"]:
-        progress("classification", 0.5, "CLAP tagging")
-        from ..models import clap_worker
+    # ---- 4. モデルベース補助スコア (候補提示のみ) ----
+    # 対象は「長い順」ではなく catchiness (Layer A/B) 上位順 (docs 08 §3.3)。
+    # キャッチー候補にこそタグ・対照スコア・美的評価を付ける
+    targets: list[dict] = []
+    if avail["clap"] or avail["aesthetics"]:
         from .curate import catchiness_for_asset
 
-        # 対象は「長い順」ではなく catchiness (Layer A/B) 上位順 (docs 08 §3.3)。
-        # キャッチー候補にこそタグと対照スコアを付ける
         scored: list[tuple[float, dict]] = []
         for rec in seg_records:
             if rec["type"] == "Reject":
@@ -254,6 +254,15 @@ def run_pipeline(
             scored.append((c, rec))
         scored.sort(key=lambda t: -t[0])
         targets = [rec for _, rec in scored[:MAX_CLAP_SEGMENTS]]
+
+    # ---- 4a. CLAP タグ + 対照ペアスコア + 個人 ranker ----
+    if avail["clap"] and targets:
+        progress("classification", 0.5, "CLAP tagging")
+        from ..models import clap_worker
+        from . import ranker
+
+        # 個人 ranker (docs 08 §3.4 D-2): CLAP embedding を流用して推論 (numpy のみ)
+        weights = ranker.load_weights(RANKER_PATH)
         for i, rec in enumerate(targets):
             seg_mono = rec["track"]["mono"][rec["start"] : rec["end"]]
             try:
@@ -264,8 +273,42 @@ def run_pipeline(
             rec["features"]["clapTags"] = clap["tags"]
             if clap["catchy"] is not None:
                 rec["features"]["clapCatchy"] = clap["catchy"]
+            emb = clap.get("embedding")
+            if weights is not None and emb is not None:
+                if len(emb) == weights["dim"]:
+                    rec["features"]["personalScore"] = float(
+                        ranker.predict_proba(emb, weights["w"], weights["b"])
+                    )
+                else:
+                    log.warning(
+                        "ranker dim mismatch: %d != %d", len(emb), weights["dim"]
+                    )
+                    weights = None
             if i % 4 == 0:
-                progress("classification", 0.5 + 0.1 * i / len(targets), f"CLAP {i}/{len(targets)}")
+                progress("classification", 0.5 + 0.07 * i / len(targets), f"CLAP {i}/{len(targets)}")
+
+    # ---- 4b. Audiobox-Aesthetics (docs 08 §3.4 D-1) ----
+    if avail["aesthetics"] and targets:
+        progress("classification", 0.58, "aesthetics scoring")
+        from ..models import aesthetics_worker
+
+        for i, rec in enumerate(targets):
+            seg_mono = rec["track"]["mono"][rec["start"] : rec["end"]]
+            try:
+                aes = aesthetics_worker.score_audio(seg_mono, sr)
+            except Exception as e:  # 美的評価は補助なので失敗しても続行
+                log.warning("aesthetics scoring failed: %s", e)
+                break
+            if aes and "CE" in aes and "PQ" in aes:
+                rec["features"]["aesScore"] = aesthetics_worker.normalize_aesthetics(
+                    aes["CE"], aes["PQ"]
+                )
+            if i % 4 == 0:
+                progress(
+                    "classification",
+                    0.58 + 0.02 * i / len(targets),
+                    f"aesthetics {i}/{len(targets)}",
+                )
 
     # ---- 5. asset render ----
     progress("render", 0.6, "rendering assets")

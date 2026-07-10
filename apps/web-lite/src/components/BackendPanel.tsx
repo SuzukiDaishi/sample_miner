@@ -17,6 +17,7 @@ type Health = {
     demucs: boolean;
     clap: boolean;
     basicPitch: boolean;
+    aesthetics?: boolean; // 旧 backend は返さないので optional
   };
 };
 
@@ -83,6 +84,9 @@ export function BackendPanel() {
   const [trackNonce, setTrackNonce] = useState(0);
   const [bars, setBars] = useState(16);
   const [seed, setSeed] = useState(0);
+  // keep/discard 判定 (docs 08 §3.4 D-2)。manifest ロード時に seed し、
+  // 更新は backend の rating API へ書き戻す
+  const [ratings, setRatings] = useState<Record<string, "keep" | "discard">>({});
   const fileRef = useRef<HTMLInputElement>(null);
   const pollRef = useRef<number | null>(null);
   const trackPollRef = useRef<number | null>(null);
@@ -127,12 +131,47 @@ export function BackendPanel() {
     async (pid: string) => {
       const r = await fetch(`${url}/api/projects/${pid}/manifest`);
       if (!r.ok) return;
-      setManifest(await r.json());
+      const m: ProjectManifest = await r.json();
+      setManifest(m);
+      const seeded: Record<string, "keep" | "discard"> = {};
+      for (const a of m.assets) {
+        if (a.userRating) seeded[a.id] = a.userRating;
+      }
+      setRatings(seeded);
       setProjectId(pid);
       setTrackJob(null);
       void loadTrackInfo(pid);
     },
     [url, loadTrackInfo]
+  );
+
+  const rateAsset = useCallback(
+    async (assetId: string, clicked: "keep" | "discard") => {
+      if (!projectId) return;
+      const next = ratings[assetId] === clicked ? null : clicked;
+      try {
+        const r = await fetch(
+          `${url}/api/projects/${projectId}/assets/${assetId}/rating`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ rating: next }),
+          }
+        );
+        if (!r.ok) throw new Error(await r.text());
+        setRatings((prev) => {
+          const out = { ...prev };
+          if (next === null) delete out[assetId];
+          else out[assetId] = next;
+          return out;
+        });
+      } catch (e) {
+        setHealthError(
+          `rating 保存失敗: ${e instanceof Error ? e.message : String(e)}`
+        );
+      }
+    },
+    [url, projectId, ratings]
   );
 
   const generateTrack = useCallback(async () => {
@@ -241,6 +280,7 @@ export function BackendPanel() {
             {modelBadge("Demucs", health.models.demucs)}
             {modelBadge("CLAP", health.models.clap)}
             {modelBadge("BasicPitch", health.models.basicPitch)}
+            {modelBadge("Aesthetics", !!health.models.aesthetics)}
           </span>
         )}
         {healthError && <span className="error-msg">{healthError}</span>}
@@ -460,12 +500,38 @@ export function BackendPanel() {
                 </h3>
                 <div className="asset-cards">
                   {group.slice(0, 24).map((a: AudioAsset) => (
-                    <div key={a.id} className="asset-card" style={{ cursor: "default" }}>
-                      <div className="name">{a.renderedPath!.split("/").pop()}</div>
+                    <div
+                      key={a.id}
+                      className="asset-card"
+                      style={{
+                        cursor: "default",
+                        ...(ratings[a.id] === "discard" ? { opacity: 0.45 } : {}),
+                      }}
+                    >
+                      <div className="name">
+                        {ratings[a.id] === "keep" && "◎ "}
+                        {ratings[a.id] === "discard" && "✕ "}
+                        {a.renderedPath!.split("/").pop()}
+                      </div>
                       <div className="meta">
                         {a.rootNote && `${a.rootNote} · `}
                         {(a.confidence * 100).toFixed(0)}%
                         {a.tags.length > 0 && ` · ${a.tags[0]}`}
+                        {" · "}
+                        <button
+                          style={{ fontSize: 10, padding: "0 4px" }}
+                          title="Keep (個人 ranker の教師データ)"
+                          onClick={() => void rateAsset(a.id, "keep")}
+                        >
+                          ◎
+                        </button>{" "}
+                        <button
+                          style={{ fontSize: 10, padding: "0 4px" }}
+                          title="Discard (個人 ranker の教師データ)"
+                          onClick={() => void rateAsset(a.id, "discard")}
+                        >
+                          ✕
+                        </button>
                       </div>
                       <audio
                         controls
