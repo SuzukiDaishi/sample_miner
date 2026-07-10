@@ -19,11 +19,13 @@ from ..config import (
     MAX_DRONES,
     MAX_MIDI,
     MAX_WAVETABLES,
+    RANKER_PATH,
 )
 from ..models.availability import model_availability
 from . import classify as clf
 from .decode import decode_to_master, load_wav, to_mono
 from .features import compute_features, estimate_bpm, estimate_key
+from .hooks import compute_hook_map, segment_hook_score
 from .loops import find_best_loop, render_loop
 from .segment import segment_track
 from .wavetable import FRAME_LEN, FRAMES, WavetableError, extract_wavetable, write_zwt
@@ -118,6 +120,16 @@ def run_pipeline(
     bpm = estimate_bpm(mono, sr)
     key = estimate_key(mono, sr)
 
+    # hook 反復検出 (docs 08 §3.2): 原曲全体の反復領域マップを 1 回だけ計算し、
+    # 各 segment の features へ hookScore として付与する (curate のランキング用)
+    hook_map = None
+    if mode != "field":
+        progress("decode", 0.03, "analyzing hook repetition")
+        try:
+            hook_map = compute_hook_map(mono, sr)
+        except Exception as e:  # 反復検出は補助シグナルなので失敗しても続行
+            log.warning("hook map failed: %s", e)
+
     # ---- 2. ルーティング + 分離 ----
     use_demucs = mode in ("auto", "music") and avail["demucs"]
     tracks: list[dict] = []  # {id, kind, stemName|None, channels, mono, model...}
@@ -182,6 +194,11 @@ def run_pipeline(
             feats = compute_features(seg_mono, sr)
             feats["bpm"] = bpm
             feats["key"] = key
+            if hook_map is not None:
+                # stem は原曲と同一タイムラインなので位置がそのまま使える
+                feats["hookScore"] = segment_hook_score(
+                    hook_map, raw.start / sr, raw.end / sr
+                )
             asset_type = clf.classify(feats, stem=track["stem"])
             confidence = clf.classification_confidence(asset_type, feats)
 
@@ -221,24 +238,77 @@ def run_pipeline(
                     f"features {done}/{total_segs}",
                 )
 
-    # ---- 4. CLAP タグ (候補提示のみ) ----
-    if avail["clap"]:
+    # ---- 4. モデルベース補助スコア (候補提示のみ) ----
+    # 対象は「長い順」ではなく catchiness (Layer A/B) 上位順 (docs 08 §3.3)。
+    # キャッチー候補にこそタグ・対照スコア・美的評価を付ける
+    targets: list[dict] = []
+    if avail["clap"] or avail["aesthetics"]:
+        from .curate import catchiness_for_asset
+
+        scored: list[tuple[float, dict]] = []
+        for rec in seg_records:
+            if rec["type"] == "Reject":
+                continue
+            seg_mono = rec["track"]["mono"][rec["start"] : rec["end"]]
+            c, _ = catchiness_for_asset(seg_mono, sr, rec["features"], rec["type"])
+            scored.append((c, rec))
+        scored.sort(key=lambda t: -t[0])
+        targets = [rec for _, rec in scored[:MAX_CLAP_SEGMENTS]]
+
+    # ---- 4a. CLAP タグ + 対照ペアスコア + 個人 ranker ----
+    if avail["clap"] and targets:
         progress("classification", 0.5, "CLAP tagging")
         from ..models import clap_worker
+        from . import ranker
 
-        targets = sorted(
-            (r for r in seg_records if r["type"] != "Reject"),
-            key=lambda r: -r["features"]["durationSec"],
-        )[:MAX_CLAP_SEGMENTS]
+        # 個人 ranker (docs 08 §3.4 D-2): CLAP embedding を流用して推論 (numpy のみ)
+        weights = ranker.load_weights(RANKER_PATH)
         for i, rec in enumerate(targets):
             seg_mono = rec["track"]["mono"][rec["start"] : rec["end"]]
             try:
-                rec["features"]["clapTags"] = clap_worker.tag_audio(seg_mono, sr)
+                clap = clap_worker.analyze_audio(seg_mono, sr)
             except Exception as e:  # タグ付けは補助なので失敗しても続行
                 log.warning("CLAP tagging failed: %s", e)
                 break
+            rec["features"]["clapTags"] = clap["tags"]
+            if clap["catchy"] is not None:
+                rec["features"]["clapCatchy"] = clap["catchy"]
+            emb = clap.get("embedding")
+            if weights is not None and emb is not None:
+                if len(emb) == weights["dim"]:
+                    rec["features"]["personalScore"] = float(
+                        ranker.predict_proba(emb, weights["w"], weights["b"])
+                    )
+                else:
+                    log.warning(
+                        "ranker dim mismatch: %d != %d", len(emb), weights["dim"]
+                    )
+                    weights = None
             if i % 4 == 0:
-                progress("classification", 0.5 + 0.1 * i / len(targets), f"CLAP {i}/{len(targets)}")
+                progress("classification", 0.5 + 0.07 * i / len(targets), f"CLAP {i}/{len(targets)}")
+
+    # ---- 4b. Audiobox-Aesthetics (docs 08 §3.4 D-1) ----
+    if avail["aesthetics"] and targets:
+        progress("classification", 0.58, "aesthetics scoring")
+        from ..models import aesthetics_worker
+
+        for i, rec in enumerate(targets):
+            seg_mono = rec["track"]["mono"][rec["start"] : rec["end"]]
+            try:
+                aes = aesthetics_worker.score_audio(seg_mono, sr)
+            except Exception as e:  # 美的評価は補助なので失敗しても続行
+                log.warning("aesthetics scoring failed: %s", e)
+                break
+            if aes and "CE" in aes and "PQ" in aes:
+                rec["features"]["aesScore"] = aesthetics_worker.normalize_aesthetics(
+                    aes["CE"], aes["PQ"]
+                )
+            if i % 4 == 0:
+                progress(
+                    "classification",
+                    0.58 + 0.02 * i / len(targets),
+                    f"aesthetics {i}/{len(targets)}",
+                )
 
     # ---- 5. asset render ----
     progress("render", 0.6, "rendering assets")

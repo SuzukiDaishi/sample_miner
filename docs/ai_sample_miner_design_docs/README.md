@@ -23,6 +23,7 @@
 | `05_data_model_and_manifest.md` | 共通データモデル、manifest、asset schema |
 | `06_roadmap.md` | MVPから本格版までの開発ロードマップ |
 | `07_research_topics_and_risks.md` | 技術課題、研究テーマ、ライセンス/権利リスク |
+| `08_catchiness_mining.md` | キャッチーな音を優先採掘するスコアリング設計 |
 
 ## 推奨する進め方
 

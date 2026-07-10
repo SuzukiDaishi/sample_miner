@@ -15,6 +15,9 @@ demucs>=4.0
 # 要求するため 4.x に固定
 transformers>=4.44,<5
 onnxruntime>=1.18
+# Audiobox-Aesthetics (docs 08 §3.4 D-1): CE/PQ 予測で aesScore を付与。
+# torch>=2.2 が必要。初回実行時に checkpoint をダウンロードする
+audiobox_aesthetics>=0.0.2
 
 # basic-pitch は py3.12 で tensorflow 依存が解決不能なため --no-deps で入れる:
 #   pip install --no-deps basic-pitch

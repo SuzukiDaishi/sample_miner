@@ -62,6 +62,36 @@ export function AssetInspector() {
         <button onClick={() => exportAssetWav(asset.id)}>Export wav</button>
       </div>
 
+      {/* keep/discard 判定 (docs 08 §3.4 D-2)。再クリックで解除。
+          userEdited は type/pitch 修正用フラグなのでここでは立てない */}
+      <div className="row">
+        <label>Rating</label>
+        <button
+          className={asset.userRating === "keep" ? "primary" : undefined}
+          onClick={() =>
+            updateAsset(asset.id, {
+              userRating: asset.userRating === "keep" ? undefined : "keep",
+            })
+          }
+        >
+          ◎ Keep
+        </button>
+        <button
+          style={
+            asset.userRating === "discard"
+              ? { background: "#a33", color: "#fff" }
+              : undefined
+          }
+          onClick={() =>
+            updateAsset(asset.id, {
+              userRating: asset.userRating === "discard" ? undefined : "discard",
+            })
+          }
+        >
+          ✕ Discard
+        </button>
+      </div>
+
       <div className="row">
         <label>Type</label>
         <select

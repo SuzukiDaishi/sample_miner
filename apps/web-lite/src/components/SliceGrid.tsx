@@ -1,5 +1,7 @@
 import { useMinerStore } from "../state/store";
 import { playAsset } from "../state/actions";
+import { catchinessScore } from "../analysis/catchiness";
+import { compareForGrid } from "../analysis/rating";
 import type { AssetType } from "../manifest/schema";
 
 const GROUP_ORDER: { type: AssetType; label: string }[] = [
@@ -38,7 +40,15 @@ export function SliceGrid() {
   return (
     <div className="asset-grid">
       {GROUP_ORDER.map(({ type, label }) => {
-        const group = assets.filter((a) => a.type === type);
+        // グループ内は keep → 未評価 → discard、同 rank 内はキャッチーさ順 (docs 08)
+        const group = assets
+          .filter((a) => a.type === type)
+          .map((a) => ({
+            asset: a,
+            catchy: catchinessScore(a.features, a.type),
+            rating: a.userRating,
+          }))
+          .sort(compareForGrid);
         if (group.length === 0) return null;
         return (
           <div className="asset-group" key={type}>
@@ -46,23 +56,30 @@ export function SliceGrid() {
               {label} <span style={{ color: "var(--fg-dim)" }}>({group.length})</span>
             </h3>
             <div className="asset-cards">
-              {group.map((a) => (
+              {group.map(({ asset: a, catchy, rating }) => (
                 <div
                   key={a.id}
                   className={`asset-card${a.id === selectedAssetId ? " selected" : ""}`}
+                  style={rating === "discard" ? { opacity: 0.45 } : undefined}
                   onClick={() => {
                     selectAsset(a.id);
                     setRegion(null);
                     playAsset(a.id);
                   }}
-                  title={`${(a.startSample / sr).toFixed(2)}s〜${(a.endSample / sr).toFixed(2)}s`}
+                  title={`${(a.startSample / sr).toFixed(2)}s〜${(a.endSample / sr).toFixed(2)}s · キャッチーさ ${(catchy * 100).toFixed(0)}`}
                 >
-                  <div className="name">{a.name}</div>
+                  <div className="name">
+                    {rating === "keep" && "◎ "}
+                    {rating === "discard" && "✕ "}
+                    {a.name}
+                  </div>
                   <div className="meta">
                     {a.features.durationSec.toFixed(2)}s
                     {a.features.pitchHz !== undefined &&
                       (a.features.pitchConfidence ?? 0) > 0.5 &&
                       ` · ${a.features.pitchHz.toFixed(0)}Hz`}
+                    {" · ★"}
+                    {(catchy * 100).toFixed(0)}
                     {" · "}
                     {(a.confidence * 100).toFixed(0)}%
                   </div>

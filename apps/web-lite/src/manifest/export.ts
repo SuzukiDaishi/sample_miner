@@ -164,10 +164,14 @@ export function buildManifest(input: ExportInput): ProjectManifest {
         spectralCentroidMean: a.features.spectralCentroid,
         spectralFlatnessMean: a.features.spectralFlatness,
         zeroCrossingRateMean: a.features.zeroCrossingRate,
+        presenceRatio: a.features.presenceRatio,
+        crestDb: a.features.crestDb,
+        spectralFluxMean: a.features.spectralFluxMean,
         f0MedianHz: a.features.pitchHz,
         f0Confidence: a.features.pitchConfidence,
         f0StabilityCents: a.features.pitchStabilityCents,
         voicedRatio: a.features.voicedRatio,
+        pitchRangeSemitones: a.features.pitchRangeSemitones,
       },
     });
 
@@ -184,6 +188,8 @@ export function buildManifest(input: ExportInput): ProjectManifest {
       confidence: a.confidence,
       uncertain: a.confidence < 0.6,
       userEdited: a.userEdited || undefined,
+      // discard 判定も残す: discard ラベル自体が ranker の学習データ (docs 08 D-2)
+      userRating: a.userRating,
     });
   }
 

@@ -30,4 +30,5 @@ def model_availability() -> dict:
         "demucs": torch_ok and _has("demucs"),
         "clap": torch_ok and _has("transformers"),
         "basicPitch": _has("basic_pitch"),
+        "aesthetics": torch_ok and _has("audiobox_aesthetics"),
     }

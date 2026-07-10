@@ -17,6 +17,8 @@ export type AssetItem = {
   type: AssetType;
   confidence: number;
   userEdited: boolean;
+  /** keep/discard 判定 (docs 08 §3.4 D-2)。個人 ranker の教師データになる */
+  userRating?: "keep" | "discard";
   rootMidi?: number;
 };
 

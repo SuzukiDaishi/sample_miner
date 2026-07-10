@@ -3,3 +3,4 @@ projects/
 __pycache__/
 *.pyc
 .pytest_cache/
+ranker_weights.json

@@ -65,6 +65,18 @@ def test_pipeline_none_mode_synthetic(tmp_path):
     # manifest が JSON として valid (NaN が混ざっていない)
     json.loads((project_dir / "manifest.json").read_text(encoding="utf-8"))
 
+    # optional モデル (CLAP / aesthetics / ranker) が無い環境では
+    # 該当 feature が一切付かない (availability ゲートが効いている)
+    from app.models.availability import model_availability
+
+    avail = model_availability()
+    for s in manifest["segments"]:
+        if not avail["clap"]:
+            assert "clapCatchy" not in s["features"]
+            assert "personalScore" not in s["features"]
+        if not avail["aesthetics"]:
+            assert "aesScore" not in s["features"]
+
 
 def _find_dataset_wav() -> Path | None:
     if not DATASET_DIR.exists():
