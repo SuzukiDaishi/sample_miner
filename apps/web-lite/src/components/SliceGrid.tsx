@@ -1,5 +1,6 @@
 import { useMinerStore } from "../state/store";
 import { playAsset } from "../state/actions";
+import { catchinessScore } from "../analysis/catchiness";
 import type { AssetType } from "../manifest/schema";
 
 const GROUP_ORDER: { type: AssetType; label: string }[] = [
@@ -38,7 +39,12 @@ export function SliceGrid() {
   return (
     <div className="asset-grid">
       {GROUP_ORDER.map(({ type, label }) => {
-        const group = assets.filter((a) => a.type === type);
+        // グループ内はキャッチーさ順 (docs 08): 抜け・パンチ・メロディの動きが
+        // 良い素材から並べる
+        const group = assets
+          .filter((a) => a.type === type)
+          .map((a) => ({ asset: a, catchy: catchinessScore(a.features, a.type) }))
+          .sort((x, y) => y.catchy - x.catchy);
         if (group.length === 0) return null;
         return (
           <div className="asset-group" key={type}>
@@ -46,7 +52,7 @@ export function SliceGrid() {
               {label} <span style={{ color: "var(--fg-dim)" }}>({group.length})</span>
             </h3>
             <div className="asset-cards">
-              {group.map((a) => (
+              {group.map(({ asset: a, catchy }) => (
                 <div
                   key={a.id}
                   className={`asset-card${a.id === selectedAssetId ? " selected" : ""}`}
@@ -55,7 +61,7 @@ export function SliceGrid() {
                     setRegion(null);
                     playAsset(a.id);
                   }}
-                  title={`${(a.startSample / sr).toFixed(2)}s〜${(a.endSample / sr).toFixed(2)}s`}
+                  title={`${(a.startSample / sr).toFixed(2)}s〜${(a.endSample / sr).toFixed(2)}s · キャッチーさ ${(catchy * 100).toFixed(0)}`}
                 >
                   <div className="name">{a.name}</div>
                   <div className="meta">
@@ -63,6 +69,8 @@ export function SliceGrid() {
                     {a.features.pitchHz !== undefined &&
                       (a.features.pitchConfidence ?? 0) > 0.5 &&
                       ` · ${a.features.pitchHz.toFixed(0)}Hz`}
+                    {" · ★"}
+                    {(catchy * 100).toFixed(0)}
                     {" · "}
                     {(a.confidence * 100).toFixed(0)}%
                   </div>

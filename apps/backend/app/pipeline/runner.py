@@ -237,22 +237,33 @@ def run_pipeline(
                     f"features {done}/{total_segs}",
                 )
 
-    # ---- 4. CLAP タグ (候補提示のみ) ----
+    # ---- 4. CLAP タグ + 対照ペアスコア (候補提示のみ) ----
     if avail["clap"]:
         progress("classification", 0.5, "CLAP tagging")
         from ..models import clap_worker
+        from .curate import catchiness_for_asset
 
-        targets = sorted(
-            (r for r in seg_records if r["type"] != "Reject"),
-            key=lambda r: -r["features"]["durationSec"],
-        )[:MAX_CLAP_SEGMENTS]
+        # 対象は「長い順」ではなく catchiness (Layer A/B) 上位順 (docs 08 §3.3)。
+        # キャッチー候補にこそタグと対照スコアを付ける
+        scored: list[tuple[float, dict]] = []
+        for rec in seg_records:
+            if rec["type"] == "Reject":
+                continue
+            seg_mono = rec["track"]["mono"][rec["start"] : rec["end"]]
+            c, _ = catchiness_for_asset(seg_mono, sr, rec["features"], rec["type"])
+            scored.append((c, rec))
+        scored.sort(key=lambda t: -t[0])
+        targets = [rec for _, rec in scored[:MAX_CLAP_SEGMENTS]]
         for i, rec in enumerate(targets):
             seg_mono = rec["track"]["mono"][rec["start"] : rec["end"]]
             try:
-                rec["features"]["clapTags"] = clap_worker.tag_audio(seg_mono, sr)
+                clap = clap_worker.analyze_audio(seg_mono, sr)
             except Exception as e:  # タグ付けは補助なので失敗しても続行
                 log.warning("CLAP tagging failed: %s", e)
                 break
+            rec["features"]["clapTags"] = clap["tags"]
+            if clap["catchy"] is not None:
+                rec["features"]["clapCatchy"] = clap["catchy"]
             if i % 4 == 0:
                 progress("classification", 0.5 + 0.1 * i / len(targets), f"CLAP {i}/{len(targets)}")
 

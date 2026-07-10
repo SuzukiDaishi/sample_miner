@@ -198,7 +198,7 @@ UI 側で「なぜこれが選ばれたか」が見えることが、スコア�
 | Phase | 内容 | 依存追加 | 期待効果 | 状況 |
 |---|---|---|---|---|
 | C1 | Layer A (DSP代理) + Layer B (hook検出) + curate 2軸化 | なし | riff/vocal がサビ由来になる。抜けの良い one-shot が上位に | **実装済 (backend)**: `features.py` に presenceRatio / crestDb / spectralFluxMean / pitchRangeSemitones、`hooks.py` に反復マップ、`curate.py` を quality/catchiness 2軸化 |
-| C2 | Layer C (CLAP対照ペア) + CLAP対象選定の変更 + Web Lite へ Layer A 移植 | なし (既存CLAP) | 音色の良し悪しが弱く反映される | 未着手 |
+| C2 | Layer C (CLAP対照ペア) + CLAP対象選定の変更 + Web Lite へ Layer A 移植 | なし (既存CLAP) | 音色の良し悪しが弱く反映される | **実装済**: `clap_worker.py` に CATCHY_PROMPT_PAIRS + `analyze_audio()` (1 embedding で tags と catchy を両取り)、CLAP 対象を catchiness 上位順に、`clapCatchy` を weight 0.15 で blend。Web Lite は features/catchiness 移植 + SliceGrid をキャッチーさ順ソート |
 | C3 | Layer D (Audiobox-Aesthetics or feedback ranker) | あり | 汎用/個人化された美的評価 | 未着手 |
 
 C1 だけでも体感が変わるはず。**hook 検出が本命**で、DSP 代理はその補強。

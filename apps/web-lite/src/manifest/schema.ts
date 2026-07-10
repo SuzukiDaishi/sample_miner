@@ -143,6 +143,14 @@ export type AudioFeatures = {
   harmonicRatio?: number;
   percussiveRatio?: number;
 
+  // キャッチーさ代理特徴 (docs 08, additive)
+  presenceRatio?: number; // 2–5kHz エネルギー比
+  crestDb?: number; // peak − RMS (dB)
+  spectralFluxMean?: number; // ピーク正規化後の flux 平均
+  pitchRangeSemitones?: number; // voiced f0 の 10–90 percentile 幅 (半音)
+  hookScore?: number; // 原曲反復マップ上の 0..1 (backend のみ)
+  clapCatchy?: number; // CLAP 対照ペアスコア 0..1 (backend のみ)
+
   bpm?: number;
   key?: string;
 

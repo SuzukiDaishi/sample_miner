@@ -173,6 +173,51 @@ describe("features + classify", () => {
   });
 });
 
+describe("catchiness (docs 08 Layer A)", () => {
+  it("computes presence / crest / pitch range features", () => {
+    const bright = sine(3000, 0.5);
+    expect(computeFeatures(bright, SR).presenceRatio).toBeGreaterThan(0.8);
+    const low = computeFeatures(sine(200, 0.5), SR);
+    expect(low.presenceRatio).toBeLessThan(0.05);
+    expect(low.crestDb).toBeLessThan(6); // 正弦波の crest は約 3dB
+    expect(low.pitchRangeSemitones ?? 99).toBeLessThan(1); // 動かないピッチ
+    const click = clickTrain([0.005], 0.4);
+    expect(computeFeatures(click, SR).crestDb).toBeGreaterThan(8);
+  });
+
+  it("scores a punchy click above a dull thud for one-shots", async () => {
+    const { catchinessScore } = await import("../src/analysis/catchiness");
+    const bright = clickTrain([0.005], 0.4);
+    const n = Math.floor(0.4 * SR);
+    const dull = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const t = i / SR;
+      dull[i] =
+        0.5 *
+        Math.sin(2 * Math.PI * 100 * t) *
+        Math.min(1, t / 0.03) *
+        Math.exp(-t / 0.3);
+    }
+    const cb = catchinessScore(computeFeatures(bright, SR), "PercussiveOneShot");
+    const cd = catchinessScore(computeFeatures(dull, SR), "PercussiveOneShot");
+    expect(cb).toBeGreaterThan(cd);
+  });
+
+  it("scores a moving melody above a static tone for phrases", async () => {
+    const { catchinessScore } = await import("../src/analysis/catchiness");
+    const notes = [261.6, 329.6, 392.0, 329.6];
+    const moving = new Float32Array(notes.length * Math.floor(0.4 * SR));
+    let off = 0;
+    for (const f of notes) {
+      moving.set(sine(f, 0.4), off);
+      off += Math.floor(0.4 * SR);
+    }
+    const cm = catchinessScore(computeFeatures(moving, SR), "MelodicPhrase");
+    const cs = catchinessScore(computeFeatures(sine(261.6, 1.6), SR), "MelodicPhrase");
+    expect(cm).toBeGreaterThan(cs);
+  });
+});
+
 describe("wavetable extraction", () => {
   it("extracts 8x2048 frames from a sawtooth and preserves shape", () => {
     const signal = saw(110, 1.0);

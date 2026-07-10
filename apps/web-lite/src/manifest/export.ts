@@ -164,10 +164,14 @@ export function buildManifest(input: ExportInput): ProjectManifest {
         spectralCentroidMean: a.features.spectralCentroid,
         spectralFlatnessMean: a.features.spectralFlatness,
         zeroCrossingRateMean: a.features.zeroCrossingRate,
+        presenceRatio: a.features.presenceRatio,
+        crestDb: a.features.crestDb,
+        spectralFluxMean: a.features.spectralFluxMean,
         f0MedianHz: a.features.pitchHz,
         f0Confidence: a.features.pitchConfidence,
         f0StabilityCents: a.features.pitchStabilityCents,
         voicedRatio: a.features.voicedRatio,
+        pitchRangeSemitones: a.features.pitchRangeSemitones,
       },
     });
 

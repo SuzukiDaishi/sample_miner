@@ -161,6 +161,40 @@ def blend_hook(
     return (1 - weight) * c + weight * float(hook)
 
 
+def blend_clap(
+    c: float, feats: dict, reasons: list[str], weight: float = 0.15
+) -> float:
+    """CLAP 対照ペアスコア (docs 08 §3.3)。美的評価用に学習されたモデルでは
+    ないため弱いシグナルとして小さい重みで blend する。決定には使わない。"""
+    v = feats.get("clapCatchy")
+    if v is None:
+        return c
+    if v >= 0.7:
+        reasons.append(f"CLAP 対照スコア高 ({v:.2f})")
+    return (1 - weight) * c + weight * float(v)
+
+
+def catchiness_for_asset(
+    y: np.ndarray, sr: int, feats: dict, asset_type: str
+) -> tuple[float, list[str]]:
+    """asset type に応じたキャッチーさ (hook / CLAP blend 込み)。
+
+    curate の選定と runner の CLAP 対象選定 (docs 08 §3.3) の共通入口。
+    """
+    if asset_type in ("PercussiveOneShot", "Impact"):
+        c, reasons = catchiness_oneshot(y, sr, feats)
+    elif asset_type == "BassOneShot":
+        c, reasons = catchiness_bass(y, sr, feats)
+    elif asset_type in ("MelodicOneShot", "WavetableCandidate"):
+        c, reasons = catchiness_melodic(y, sr, feats)
+    elif asset_type in ("VocalChop", "MelodicPhrase", "SliceLoop"):
+        c, reasons = catchiness_phrase(y, sr, feats)
+        c = blend_hook(c, feats, reasons)
+    else:  # DroneLoop / NoiseTexture / AmbienceLoop 等は中立
+        c, reasons = 0.5, []
+    return blend_clap(c, feats, reasons), reasons
+
+
 def analyze_oneshot(
     y: np.ndarray, sr: int, feats: dict
 ) -> tuple[float, list[str], bool]:
@@ -387,7 +421,7 @@ def curate_project(project_dir: Path, out_dir: Path) -> list[Curated]:
             if base.startswith("bass_"):
                 if a.get("rootMidi") is None or quality < 0.5:
                     continue
-                catchy, c_reasons = catchiness_bass(y, sr, feats)
+                catchy, c_reasons = catchiness_for_asset(y, sr, feats, "BassOneShot")
                 rel = f"bass/{base}.wav"
                 export_wav(y, sr, out_dir / rel, 1, 8 if complete else 60)
                 results.append(
@@ -400,7 +434,7 @@ def curate_project(project_dir: Path, out_dir: Path) -> list[Curated]:
             if not base.startswith("drums_"):
                 quality -= 0.15
             role = drum_role(y, sr)
-            catchy, c_reasons = catchiness_oneshot(y, sr, feats)
+            catchy, c_reasons = catchiness_for_asset(y, sr, feats, t)
             rel = f"drums_{role}/{base}.wav"
             export_wav(y, sr, out_dir / rel, 1, 6)
             results.append(
@@ -416,10 +450,7 @@ def curate_project(project_dir: Path, out_dir: Path) -> list[Curated]:
                 continue
             fade_out = 8 if complete else 60
             folder = "bass" if t == "BassOneShot" else "melodic"
-            if t == "BassOneShot":
-                catchy, c_reasons = catchiness_bass(y, sr, feats)
-            else:
-                catchy, c_reasons = catchiness_melodic(y, sr, feats)
+            catchy, c_reasons = catchiness_for_asset(y, sr, feats, t)
             rel = f"{folder}/{base}.wav"
             export_wav(y, sr, out_dir / rel, 1, fade_out)
             results.append(
@@ -442,6 +473,7 @@ def curate_project(project_dir: Path, out_dir: Path) -> list[Curated]:
                         riff_reasons = [f"{mult}小節ループ化 ({bpm:.0f}BPM)"]
                         # riff は hook 反復が主軸 (docs 08 §3.2)
                         riff_catchy = blend_hook(riff_quality, feats, riff_reasons, weight=0.4)
+                        riff_catchy = blend_clap(riff_catchy, feats, riff_reasons)
                         mult_tag = str(mult).replace(".", "_")
                         rel_riff = f"riffs/{base}_loop{mult_tag}bar.wav"
                         export_wav(y[:target], sr, out_dir / rel_riff, 3, 25)
@@ -453,8 +485,7 @@ def curate_project(project_dir: Path, out_dir: Path) -> list[Curated]:
 
             if quality < 0.55:
                 continue
-            catchy, c_reasons = catchiness_phrase(y, sr, feats)
-            catchy = blend_hook(catchy, feats, c_reasons)
+            catchy, c_reasons = catchiness_for_asset(y, sr, feats, t)
             folder = "vocal_phrases" if "vocal" in base else "phrases"
             rel = f"{folder}/{base}.wav"
             export_wav(y, sr, out_dir / rel, 8, 60)

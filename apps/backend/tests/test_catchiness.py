@@ -2,7 +2,9 @@
 import numpy as np
 
 from app.pipeline.curate import (
+    blend_clap,
     blend_hook,
+    catchiness_for_asset,
     catchiness_oneshot,
     catchiness_phrase,
 )
@@ -72,6 +74,28 @@ class TestCatchiness:
         assert 0.5 < blended <= 1.0
         assert any("反復" in r for r in reasons)
         assert blend_hook(0.5, {"hookScore": 0.0}, []) < 0.5
+
+    def test_blend_clap_is_weak_signal(self):
+        reasons: list[str] = []
+        assert blend_clap(0.5, {}, reasons) == 0.5  # clapCatchy 無し → そのまま
+        # 重みは小さい: CLAP が満点でも +0.15 まで (docs 08 §3.3)
+        assert blend_clap(0.5, {"clapCatchy": 1.0}, reasons) <= 0.5 + 0.16
+        assert any("CLAP" in r for r in reasons)
+
+    def test_catchiness_for_asset_dispatch(self):
+        y = click()
+        feats = compute_features(y, SR)
+        c_drum, _ = catchiness_for_asset(y, SR, feats, "PercussiveOneShot")
+        c_direct, _ = catchiness_oneshot(y, SR, feats)
+        assert c_drum == c_direct  # blend 対象の feature が無ければ一致
+        # hook + clap の blend が乗る
+        feats2 = dict(feats, hookScore=1.0, clapCatchy=1.0)
+        c_phrase, reasons = catchiness_for_asset(y, SR, feats2, "MelodicPhrase")
+        c_base, _ = catchiness_phrase(y, SR, feats)
+        assert c_phrase > c_base
+        # 未知 type (drones 等) は中立 0.5 ベース
+        c_drone, _ = catchiness_for_asset(y, SR, feats, "DroneLoop")
+        assert abs(c_drone - 0.5) < 1e-9
 
 
 class TestHookMap:
