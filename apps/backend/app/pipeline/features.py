@@ -19,6 +19,19 @@ def _db(v: float) -> float:
     return float(20 * np.log10(max(v, 1e-10)))
 
 
+def band_energy_ratio(y: np.ndarray, sr: int, lo_hz: float, hi_hz: float) -> float:
+    """[lo_hz, hi_hz) 帯域のエネルギー比 (0..1)。スケール不変。"""
+    n = len(y)
+    if n < 256:
+        return 0.0
+    spec = np.abs(np.fft.rfft(y * np.hanning(n))) ** 2
+    freqs = np.fft.rfftfreq(n, 1 / sr)
+    total = float(spec.sum())
+    if total <= 0:
+        return 0.0
+    return float(spec[(freqs >= lo_hz) & (freqs < hi_hz)].sum() / total)
+
+
 def estimate_key(y: np.ndarray, sr: int) -> str | None:
     """chroma × Krumhansl profile の簡易 key 推定(track 全体用)。"""
     if len(y) < sr:
@@ -78,6 +91,15 @@ def compute_features(y: np.ndarray, sr: int) -> dict:
     onsets = librosa.onset.onset_detect(y=buf, sr=sr, hop_length=512, units="time")
     transient_density = float(len(onsets) / max(0.1, len(buf) / sr))
 
+    # キャッチーさ代理特徴 (docs 08 §3.1)。presence/crest はスケール不変、
+    # flux は loudness 退化を避けるためピーク正規化した信号で測る
+    presence_ratio = band_energy_ratio(buf, sr, 2000, 5000)
+    crest_db = _db(peak) - _db(rms)
+    norm_buf = buf / peak if peak > 1e-6 else buf
+    spectral_flux = float(
+        librosa.onset.onset_strength(y=norm_buf, sr=sr, n_fft=1024, hop_length=512).mean()
+    )
+
     # pitch (pYIN)。長い素材はコスト削減のため 22.05k へ落とす
     pitch_buf, pitch_sr = buf, sr
     if sr > 22050 and len(buf) > sr * 2:
@@ -87,6 +109,7 @@ def compute_features(y: np.ndarray, sr: int) -> dict:
     f0_conf = 0.0
     f0_stab = None
     voiced_ratio = 0.0
+    pitch_range = None
     if len(pitch_buf) >= 2048:
         f0, voiced_flag, voiced_prob = librosa.pyin(
             pitch_buf,
@@ -104,8 +127,13 @@ def compute_features(y: np.ndarray, sr: int) -> dict:
             if len(voiced) >= 2:
                 cents = 1200 * np.log2(voiced / f0_median)
                 f0_stab = float(np.std(cents))
+                # pitch 動き量 (docs 08): octave error の影響を抑えるため
+                # 10/90 percentile 幅を半音換算する
+                p_lo, p_hi = np.percentile(voiced, [10, 90])
+                pitch_range = float(12 * np.log2(max(p_hi, 1e-6) / max(p_lo, 1e-6)))
             else:
                 f0_stab = 0.0
+                pitch_range = 0.0
 
     # harmonic / percussive ratio (HPSS)
     harmonic_ratio = percussive_ratio = None
@@ -125,6 +153,10 @@ def compute_features(y: np.ndarray, sr: int) -> dict:
         "attackMs": float(attack_ms),
         "decayMs": float(decay_ms),
         "transientDensity": transient_density,
+        "presenceRatio": presence_ratio,
+        "crestDb": crest_db,
+        "spectralFluxMean": spectral_flux,
+        "pitchRangeSemitones": pitch_range,
         "spectralCentroidMean": float(centroid.mean()),
         "spectralCentroidStd": float(centroid.std()),
         "spectralFlatnessMean": flatness,

@@ -24,6 +24,7 @@ from ..models.availability import model_availability
 from . import classify as clf
 from .decode import decode_to_master, load_wav, to_mono
 from .features import compute_features, estimate_bpm, estimate_key
+from .hooks import compute_hook_map, segment_hook_score
 from .loops import find_best_loop, render_loop
 from .segment import segment_track
 from .wavetable import FRAME_LEN, FRAMES, WavetableError, extract_wavetable, write_zwt
@@ -118,6 +119,16 @@ def run_pipeline(
     bpm = estimate_bpm(mono, sr)
     key = estimate_key(mono, sr)
 
+    # hook 反復検出 (docs 08 §3.2): 原曲全体の反復領域マップを 1 回だけ計算し、
+    # 各 segment の features へ hookScore として付与する (curate のランキング用)
+    hook_map = None
+    if mode != "field":
+        progress("decode", 0.03, "analyzing hook repetition")
+        try:
+            hook_map = compute_hook_map(mono, sr)
+        except Exception as e:  # 反復検出は補助シグナルなので失敗しても続行
+            log.warning("hook map failed: %s", e)
+
     # ---- 2. ルーティング + 分離 ----
     use_demucs = mode in ("auto", "music") and avail["demucs"]
     tracks: list[dict] = []  # {id, kind, stemName|None, channels, mono, model...}
@@ -182,6 +193,11 @@ def run_pipeline(
             feats = compute_features(seg_mono, sr)
             feats["bpm"] = bpm
             feats["key"] = key
+            if hook_map is not None:
+                # stem は原曲と同一タイムラインなので位置がそのまま使える
+                feats["hookScore"] = segment_hook_score(
+                    hook_map, raw.start / sr, raw.end / sr
+                )
             asset_type = clf.classify(feats, stem=track["stem"])
             confidence = clf.classification_confidence(asset_type, feats)
 
